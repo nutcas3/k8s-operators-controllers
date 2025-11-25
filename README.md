@@ -2,7 +2,7 @@
 
 A collection of hands-on Kubernetes operator and controller projects organized by complexity level. Each project demonstrates key concepts in building production-grade Kubernetes controllers using Kubebuilder or Operator SDK.
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 k8s-operators-controllers/
@@ -79,7 +79,7 @@ k8s-operators-controllers/
         └── examples/
 ```
 
-## 🚀 Beginner Projects
+## Beginner Projects
 
 ### 1. Simple Web App Operator
 **Focus:** Basic reconciliation loop, resource ownership, CRUD operations
@@ -103,7 +103,7 @@ spec:
   replicas: 3
 ```
 
-[📖 Full Documentation](01-beginner/simple-webapp-operator/README.md)
+[Full Documentation](01-beginner/simple-webapp-operator/README.md)
 
 ### 2. ConfigMap Syncer Controller
 **Focus:** Cross-namespace operations, watching multiple resources
@@ -131,9 +131,9 @@ spec:
     - prod
 ```
 
-[📖 Full Documentation](01-beginner/configmap-syncer/README.md)
+[Full Documentation](01-beginner/configmap-syncer/README.md)
 
-## 🏗️ Intermediate Projects
+## Intermediate Projects
 
 ### 3. StatefulSet Backup Operator
 **Focus:** Jobs, scheduling, PVC interactions
@@ -160,7 +160,7 @@ spec:
   backupStrategy: snapshot
 ```
 
-[📖 Full Documentation](02-intermediate/statefulset-backup-operator/README.md)
+[Full Documentation](02-intermediate/statefulset-backup-operator/README.md)
 
 ### 4. Database User Manager Operator
 **Focus:** External system integration, secret management
@@ -188,7 +188,7 @@ spec:
     - UPDATE
 ```
 
-[📖 Full Documentation](02-intermediate/database-user-manager/README.md)
+[Full Documentation](02-intermediate/database-user-manager/README.md)
 
 ### 5. HPA Custom Metric Operator
 **Focus:** External metrics, custom scaling logic
@@ -214,9 +214,9 @@ spec:
   targetQueueDepth: 50
 ```
 
-[📖 Full Documentation](02-intermediate/hpa-custom-metric-operator/README.md)
+[Full Documentation](02-intermediate/hpa-custom-metric-operator/README.md)
 
-## 🧩 Advanced Projects
+## Advanced Projects
 
 ### 6. Cluster Provisioner Operator
 **Focus:** Infrastructure provisioning, long-running operations
@@ -241,7 +241,7 @@ spec:
   provider: kind
 ```
 
-[📖 Full Documentation](03-advanced/cluster-provisioner-operator/README.md)
+[Full Documentation](03-advanced/cluster-provisioner-operator/README.md)
 
 ### 7. Application Rolling Upgrade Operator
 **Focus:** Day 2 operations, orchestrated upgrades
@@ -269,9 +269,9 @@ spec:
     migrationScript: /scripts/migrate.sh
 ```
 
-[📖 Full Documentation](03-advanced/rolling-upgrade-operator/README.md)
+[Full Documentation](03-advanced/rolling-upgrade-operator/README.md)
 
-## 🛠️ Prerequisites
+## Prerequisites
 
 - Go 1.21 or later
 - Docker or Podman
@@ -279,7 +279,7 @@ spec:
 - Access to a Kubernetes cluster (local: kind, minikube, k3d)
 - Kubebuilder v3.x or Operator SDK v1.x
 
-## 🚦 Getting Started
+## Getting Started
 
 1. **Clone the repository:**
    ```bash
@@ -302,7 +302,7 @@ spec:
 4. **Read the documentation:**
    Check out `docs/getting-started.md` for a comprehensive guide.
 
-## 📚 Learning Path
+## Learning Path
 
 We recommend following this progression:
 
@@ -314,7 +314,7 @@ We recommend following this progression:
 6. **Cluster Provisioner** → Infrastructure management
 7. **Rolling Upgrade Operator** → Complex orchestration
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to:
 - Add new project ideas
@@ -322,23 +322,23 @@ Contributions are welcome! Please feel free to:
 - Fix bugs or enhance documentation
 - Share your learning experiences
 
-## 📖 Resources
+## Resources
 
 - [Kubebuilder Book](https://book.kubebuilder.io/)
 - [Operator SDK Documentation](https://sdk.operatorframework.io/)
 - [Kubernetes API Conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md)
 - [Controller Runtime](https://github.com/kubernetes-sigs/controller-runtime)
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## ⭐ Acknowledgments
+## Acknowledgments
 
 These projects are designed as learning exercises to build practical Kubernetes operator development skills. Each project includes real-world patterns used in production operators.
 
 ---
 
-**Happy Learning! 🎓**
+**Happy Learning!**
 
 Start with the beginner projects and work your way up. Each completed project builds skills for the next level.
