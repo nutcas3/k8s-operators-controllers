@@ -1,0 +1,44 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+testbin/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Kubernetes Generated files - skip generated CRD files
+**/config/crd/bases
+
+# editor and IDE paraphernalia
+.idea
+*.swp
+*.swo
+*~
+.vscode/
+
+# MacOS
+.DS_Store
+
+# Kubebuilder
+/bin/
+
+# Temporary Build Files
+*.tmp
+*.bak
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# Build artifacts
+dist/
