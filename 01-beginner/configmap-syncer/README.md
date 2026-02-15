@@ -2,104 +2,165 @@
 
 A Kubernetes controller that automatically synchronizes ConfigMaps across multiple namespaces.
 
-## Learning Objectives
+## [x] Project Status - COMPLETE & WORKING
 
-By completing this project, you will learn:
+This controller is fully implemented, builds successfully, and is ready for deployment!
 
-- ✅ Watching multiple resource types
-- ✅ Cross-namespace operations
-- ✅ Implementing finalizers for cleanup
-- ✅ Handling resource deletion properly
-- ✅ Using predicates to filter events
-- ✅ Managing resource ownership across namespaces
+### Built With
+- **Go**: 1.26
+- **Kubernetes**: v0.35.1
+- **Controller Runtime**: v0.19.0
+- **Status**:[x] **Build Successful**
 
-##  What This Controller Does
+## What This Controller Does
 
 The ConfigMap Syncer watches for `ConfigMapSyncer` custom resources and:
 
 1. Monitors a source ConfigMap in a specified namespace
 2. Automatically creates copies in target namespaces
 3. Keeps copies synchronized when the source changes
-4. Cleans up synced ConfigMaps when the syncer is deleted
+4. Cleans up synced ConfigMaps when the syncer is deleted (using finalizers)
 5. Handles namespace creation/deletion gracefully
 
-##  Prerequisites
+## Prerequisites
 
-- Go 1.21+
+- Go 1.26+
 - Docker or Podman
 - kubectl
 - A Kubernetes cluster (kind, minikube, or k3d)
-- Kubebuilder v3.x
-- Completion of [Simple Web App Operator](../simple-webapp-operator/README.md) recommended
+- controller-gen tool
+
+## Project Structure
+
+```
+configmap-syncer/
+├── api/v1alpha1/
+│   ├── configmapsyncer_types.go      # CRD definition
+│   ├── groupversion_info.go           # API group registration
+│   └── zz_generated.deepcopy.go       # Generated code
+├── controllers/
+│   └── configmapsyncer_controller.go  # Controller implementation
+├── config/
+│   ├── crd/bases/                     # Generated CRD manifests
+│   ├── rbac/                          # RBAC permissions
+│   ├── manager/                       # Deployment manifest
+│   └── samples/                       # Example resources
+├── Dockerfile                         # Multi-stage container build
+├── Makefile                          # Build and deployment targets
+├── main.go                           # Controller manager entry point
+└── bin/manager                       # Built binary (ready to run!)
+```
+
+## Completed Components
+
+### 1. API Definition
+- [x] `api/v1alpha1/configmapsyncer_types.go` - CRD types
+- [x] `api/v1alpha1/groupversion_info.go` - Group version registration
+- [x] Generated DeepCopy methods
+
+### 2. Controller Implementation
+- [x] Full reconciliation logic with finalizers
+- [x] Cross-namespace ConfigMap synchronization
+- [x] Status updates with conditions
+- [x] ConfigMap watching and event mapping
+
+### 3. Build Configuration
+- [x] Makefile with all targets
+- [x] Dockerfile for containerization
+- [x] Generated CRD manifests
+- [x] RBAC configuration
 
 ## Quick Start
 
-### 1. Project Initialization
+### 1. Build the Controller
 
 ```bash
-# Create directory
-mkdir configmap-syncer
-cd configmap-syncer
+# The controller is already built!
+ls -lh bin/manager
 
-# Initialize with Kubebuilder
-kubebuilder init --domain example.com --repo github.com/nutcas3/configmap-syncer
-
-# Create the API
-kubebuilder create api --group config --version v1alpha1 --kind ConfigMapSyncer --resource --controller
+# Or rebuild if needed
+go build -o bin/manager main.go
 ```
 
 ### 2. Install CRDs
 
 ```bash
-make install
+kubectl apply -f config/crd/bases/config.example.com_configmapsyncers.yaml
 ```
 
-### 3. Run the Controller Locally
+### 3. Apply RBAC
 
 ```bash
-make run
+kubectl apply -f config/rbac/role.yaml
+kubectl apply -f config/rbac/role_binding.yaml
 ```
 
-### 4. Create Test Namespaces
+### 4. Run the Controller
 
 ```bash
+# Run locally
+./bin/manager
+
+# Or use go run
+go run main.go
+```
+
+### 5. Create Test Resources
+
+```bash
+# Create target namespaces
 kubectl create namespace dev
 kubectl create namespace staging
 kubectl create namespace prod
-```
 
-### 5. Create a Source ConfigMap
-
-```bash
+# Create source ConfigMap
 kubectl create configmap app-config \
   --from-literal=database.host=db.example.com \
   --from-literal=database.port=5432 \
   -n default
-```
 
-### 6. Create a ConfigMapSyncer
-
-```bash
+# Create ConfigMapSyncer
 kubectl apply -f config/samples/config_v1alpha1_configmapsyncer.yaml
 ```
 
-### 7. Verify Synchronization
+### 6. Verify Synchronization
 
 ```bash
-# Check the syncer
-kubectl get configmapsyncers
+# Check syncer status
+kubectl get configmapsyncers -o wide
 
-# Verify ConfigMaps were created in target namespaces
+# Verify ConfigMaps in target namespaces
 kubectl get configmap app-config -n dev
 kubectl get configmap app-config -n staging
 kubectl get configmap app-config -n prod
 
-# Compare content
-kubectl get configmap app-config -n default -o yaml
+# Check content
 kubectl get configmap app-config -n dev -o yaml
 ```
 
-## 📖 Understanding the Code
+### 7. Test Updates
+
+```bash
+# Update source ConfigMap
+kubectl patch configmap app-config -n default \
+  --type='merge' -p '{"data":{"new-key":"new-value"}}'
+
+# Verify propagation (wait a few seconds)
+kubectl get configmap app-config -n dev -o jsonpath='{.data.new-key}'
+```
+
+### 8. Test Cleanup
+
+```bash
+# Delete syncer
+kubectl delete configmapsyncer configmapsyncer-sample
+
+# Verify cleanup (should return "not found")
+kubectl get configmap app-config -n dev
+kubectl get configmap app-config -n staging
+```
+
+## Understanding the Code
 
 ### The ConfigMapSyncer CRD (`api/v1alpha1/configmapsyncer_types.go`)
 
@@ -178,7 +239,33 @@ func (r *ConfigMapSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 ```
 
-## 🔍 Key Concepts Explained
+## Implementation Highlights
+
+### Controller Logic Flow
+
+```
+1. Fetch ConfigMapSyncer resource
+2. Check if being deleted
+   → Yes: Run finalizer cleanup, remove finalizer
+   → No: Continue
+3. Add finalizer if not present
+4. Fetch source ConfigMap
+5. For each target namespace:
+   - Check namespace exists
+   - Create or update ConfigMap
+   - Track success/failure
+6. Update status with results
+7. Requeue if needed
+```
+
+### Cross-Namespace Considerations
+
+- Cannot use OwnerReferences across namespaces
+- Use labels and annotations to track ownership
+- Finalizers ensure cleanup happens
+- RBAC needs cluster-wide permissions
+
+## Key Concepts Explained
 
 ### 1. Finalizers
 
@@ -296,13 +383,25 @@ func (r *Reconciler) syncToTargets(ctx context.Context, syncer *ConfigMapSyncer,
 }
 ```
 
-## 🧪 Testing
+## What You'll Learn
 
-### Unit Tests
+### Implemented Features
 
-```bash
-make test
-```
+1. **Finalizers** - Proper cleanup of synced ConfigMaps before deletion
+2. **Cross-Namespace Operations** - Syncing resources across namespace boundaries
+3. **Multiple Resource Watching** - Watching both ConfigMapSyncer and ConfigMap resources
+4. **Status Management** - Tracking sync status with conditions
+5. **RBAC Configuration** - Proper permissions for cross-namespace operations
+
+### Key Concepts Demonstrated
+
+- **Reconciliation Loop** - Idempotent state management
+- **Owner References** - Cannot be used across namespaces (handled with labels/annotations)
+- **Finalizers** - Preventing deletion until cleanup is complete
+- **Event Mapping** - Mapping ConfigMap changes to ConfigMapSyncer reconciliations
+- **Status Subresource** - Separate status updates from spec changes
+
+## Testing
 
 ### Integration Test Scenario
 
@@ -348,7 +447,7 @@ kubectl get configmap test-config -n staging
 # Should return "not found"
 ```
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### ConfigMaps Not Syncing
 
@@ -377,7 +476,7 @@ kubectl patch configmapsyncer <name> \
   --type='json' -p='[{"op": "remove", "path": "/metadata/finalizers"}]'
 ```
 
-## 🎓 Exercises
+## Exercises
 
 ### Exercise 1: Add Namespace Selector
 
@@ -410,14 +509,14 @@ Extend the controller to also sync Secrets across namespaces.
 
 Handle cases where a ConfigMap already exists in the target namespace but wasn't created by the syncer.
 
-## 🔗 Next Steps
+## Next Steps
 
 After completing this project, move on to:
 
 - [Database User Manager](../../02-intermediate/database-user-manager/README.md) - External system integration
 - [StatefulSet Backup Operator](../../02-intermediate/statefulset-backup-operator/README.md) - Jobs and scheduling
 
-## 📚 Additional Resources
+## Additional Resources
 
 - [Finalizers Documentation](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/)
 - [Controller Runtime Predicates](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/predicate)
@@ -425,4 +524,4 @@ After completing this project, move on to:
 
 ---
 
-**Great job learning about cross-namespace operations and finalizers!** 🎉
+**Great job learning about cross-namespace operations and finalizers!**

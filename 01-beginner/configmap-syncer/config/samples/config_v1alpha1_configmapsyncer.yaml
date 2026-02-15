@@ -1,0 +1,12 @@
+apiVersion: config.example.com/v1alpha1
+kind: ConfigMapSyncer
+metadata:
+  name: configmapsyncer-sample
+  namespace: default
+spec:
+  sourceNamespace: default
+  sourceConfigMap: app-config
+  targetNamespaces:
+    - dev
+    - staging
+    - prod
