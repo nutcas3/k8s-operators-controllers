@@ -1,0 +1,9 @@
+apiVersion: apps.example.com/v1alpha1
+kind: WebApp
+metadata:
+  name: webapp-sample
+  namespace: default
+spec:
+  image: nginx:latest
+  replicas: 3
+  port: 80
