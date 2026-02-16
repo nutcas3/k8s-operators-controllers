@@ -2,6 +2,19 @@
 
 A beginner-friendly Kubernetes operator that manages web applications by creating and managing Deployments and Services.
 
+## Project Status
+
+**Status**: **Complete and Ready to Use**
+
+- ✅ **CRD Implementation** - WebApp custom resource with validation
+- ✅ **Controller Logic** - Full reconciliation for Deployments and Services
+- ✅ **Owner References** - Automatic garbage collection
+- ✅ **Status Management** - Tracks available replicas and service URL
+- ✅ **Conditions** - Reports readiness status with detailed reasons
+- ✅ **Build System** - Makefile, Dockerfile, and deployment manifests
+- ✅ **RBAC Configuration** - Proper permissions for Deployments and Services
+- ✅ **Binary Built** - Ready to run (`bin/manager`)
+
 ## Learning Objectives
 
 By completing this project, you will learn:
@@ -12,66 +25,31 @@ By completing this project, you will learn:
 - Updating resource status
 - Patching existing resources
 - Basic error handling
+- Idempotent operations
+- Status conditions management
 
 ## What This Operator Does
 
 The Simple Web App Operator watches for `WebApp` custom resources and automatically:
 
-1. Creates a Deployment with the specified image and replica count
-2. Creates a Service to expose the application
-3. Updates the WebApp status with the service URL
-4. Handles updates to the WebApp spec
-5. Cleans up resources when the WebApp is deleted
+1. **Creates a Deployment** with the specified image and replica count
+2. **Creates a Service** to expose the application
+3. **Updates the WebApp status** with the service URL and available replicas
+4. **Handles updates** to the WebApp spec (image, replicas, port)
+5. **Cleans up resources** when the WebApp is deleted (via owner references)
+6. **Reports conditions** for readiness status and error states
 
 ## Prerequisites
 
-- Go 1.21+
+- Go 1.26+ (matches project configuration)
 - Docker or Podman
 - kubectl
 - A Kubernetes cluster (kind, minikube, or k3d)
-- Kubebuilder v3.x
-
-See [Development Setup Guide](../../docs/development-setup.md) for detailed installation instructions.
+- controller-gen (for CRD generation)
 
 ## Quick Start
 
-### 1. Initialize the Project
-
-This project has already been initialized with Kubebuilder. To create a similar project from scratch:
-
-```bash
-# Create directory
-mkdir simple-webapp-operator
-cd simple-webapp-operator
-
-# Initialize with Kubebuilder
-kubebuilder init --domain example.com --repo github.com/nutcas3/simple-webapp-operator
-
-# Create the API
-kubebuilder create api --group apps --version v1alpha1 --kind WebApp --resource --controller
-```
-
-### 2. Explore the Project Structure
-
-```
-simple-webapp-operator/
-├── api/v1alpha1/
-│   ├── webapp_types.go          # CRD definition
-│   └── groupversion_info.go     # API group metadata
-├── controllers/
-│   └── webapp_controller.go     # Reconciliation logic
-├── config/
-│   ├── crd/                     # Generated CRD manifests
-│   ├── rbac/                    # RBAC permissions
-│   ├── manager/                 # Operator deployment
-│   └── samples/                 # Example WebApp resources
-├── cmd/
-│   └── main.go                  # Entry point
-├── Makefile                     # Build and deployment commands
-└── PROJECT                      # Kubebuilder metadata
-```
-
-### 3. Install CRDs
+### 1. Install CRDs
 
 ```bash
 make install
@@ -79,7 +57,7 @@ make install
 
 This installs the `WebApp` CRD into your Kubernetes cluster.
 
-### 4. Run the Operator Locally
+### 2. Run the Operator Locally
 
 ```bash
 make run
@@ -87,7 +65,7 @@ make run
 
 The operator will start and watch for WebApp resources in your cluster.
 
-### 5. Create a Sample WebApp
+### 3. Create a Sample WebApp
 
 In another terminal:
 
@@ -95,7 +73,7 @@ In another terminal:
 kubectl apply -f config/samples/apps_v1alpha1_webapp.yaml
 ```
 
-### 6. Verify It Works
+### 4. Verify It Works
 
 ```bash
 # Check the WebApp resource
@@ -111,7 +89,34 @@ kubectl get services
 kubectl describe webapp webapp-sample
 ```
 
-## Understanding the Code
+## Project Structure
+
+```
+simple-webapp-operator/
+├── api/v1alpha1/
+│   ├── webapp_types.go          # CRD definition with validation
+│   ├── groupversion_info.go     # API group metadata
+│   └── zz_generated.deepcopy.go # Generated DeepCopy methods
+├── controllers/
+│   └── webapp_controller.go     # Full reconciliation logic
+├── cmd/
+│   └── main.go                  # Controller manager entry point
+├── config/
+│   ├── crd/bases/               # Generated CRD manifests
+│   ├── rbac/                    # RBAC permissions
+│   ├── manager/                 # Operator deployment
+│   └── samples/                 # Example WebApp resources
+├── hack/
+│   └── boilerplate.go.txt       # License header for code generation
+├── bin/
+│   └── manager                  # Built binary
+├── Makefile                     # Build and deployment commands
+├── Dockerfile                   # Container build configuration
+├── PROJECT                      # Kubebuilder metadata
+└── go.mod                       # Go module definition
+```
+
+## Implementation Details
 
 ### The WebApp CRD (`api/v1alpha1/webapp_types.go`)
 
@@ -179,7 +184,7 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 }
 ```
 
-## 🔍 Key Concepts Explained
+## Key Concepts Explained
 
 ### 1. Owner References
 
@@ -297,7 +302,7 @@ make install
 # (if running locally, check terminal output)
 
 # If deployed to cluster:
-kubectl logs -n webapp-operator-system deployment/webapp-operator-controller-manager
+kubectl logs -n default deployment/simple-webapp-operator-controller
 ```
 
 ### Deployment Not Updating
@@ -331,8 +336,8 @@ make deploy IMG=<your-registry>/webapp-operator:v0.1.0
 ### Verify Deployment
 
 ```bash
-kubectl get deployment -n webapp-operator-system
-kubectl get pods -n webapp-operator-system
+kubectl get deployment -n default
+kubectl get pods -n default
 ```
 
 ### Undeploy
@@ -341,7 +346,7 @@ kubectl get pods -n webapp-operator-system
 make undeploy
 ```
 
-## 🎓 Exercises
+## Exercises
 
 Try these exercises to deepen your understanding:
 
@@ -351,9 +356,9 @@ Extend the WebApp CRD to support environment variables:
 
 ```go
 type WebAppSpec struct {
-    Image    string            `json:"image"`
-    Replicas int32             `json:"replicas,omitempty"`
-    Port     int32             `json:"port,omitempty"`
+    Image    string            `json:"image"` 
+    Replicas int32             `json:"replicas,omitempty"` 
+    Port     int32             `json:"port,omitempty"` 
     Env      map[string]string `json:"env,omitempty"` // Add this
 }
 ```
@@ -366,13 +371,13 @@ Add CPU and memory limits to the WebApp spec:
 
 ```go
 type ResourceRequirements struct {
-    CPU    string `json:"cpu,omitempty"`
-    Memory string `json:"memory,omitempty"`
+    CPU    string `json:"cpu,omitempty"` 
+    Memory string `json:"memory,omitempty"` 
 }
 
 type WebAppSpec struct {
     // ... existing fields
-    Resources ResourceRequirements `json:"resources,omitempty"`
+    Resources ResourceRequirements `json:"resources,omitempty"` 
 }
 ```
 
@@ -384,12 +389,13 @@ Add liveness and readiness probes to the Deployment based on WebApp configuratio
 
 Implement a finalizer to perform cleanup actions before the WebApp is deleted.
 
-## 🔗 Next Steps
+## Next Steps
 
 After completing this project, move on to:
 
 - [ConfigMap Syncer](../configmap-syncer/README.md) - Learn about watching multiple resources
 - [Database User Manager](../../02-intermediate/database-user-manager/README.md) - External system integration
+- [StatefulSet Backup Operator](../../02-intermediate/statefulset-backup-operator/README.md) - Cron scheduling and job management
 
 ## Additional Resources
 
