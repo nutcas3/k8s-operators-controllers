@@ -1,0 +1,19 @@
+apiVersion: database.example.com/v1alpha1
+kind: PostgresUser
+metadata:
+  name: app-user
+  namespace: default
+spec:
+  username: myapp
+  database: myapp_db
+  host: postgres.default.svc.cluster.local
+  port: 5432
+  adminSecretRef:
+    name: postgres-admin
+  privileges:
+    - SELECT
+    - INSERT
+    - UPDATE
+    - DELETE
+  secretName: myapp-db-credentials
+  rotatePassword: false
