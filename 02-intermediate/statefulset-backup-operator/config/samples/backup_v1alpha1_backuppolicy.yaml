@@ -1,0 +1,15 @@
+apiVersion: backup.example.com/v1alpha1
+kind: BackupPolicy
+metadata:
+  name: db-backup
+  namespace: default
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  pvcSelector:
+    matchLabels:
+      app: postgres
+  backupStrategy: tar
+  retentionCount: 7
+  backupImage: busybox:latest
+  backupStoragePVC: backup-storage
+  suspend: false
