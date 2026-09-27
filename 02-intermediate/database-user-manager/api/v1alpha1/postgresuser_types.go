@@ -15,12 +15,19 @@ type PostgresUserSpec struct {
 	// +kubebuilder:validation:Required
 	Database string `json:"database"`
 
-	// Host is the PostgreSQL server host
+	// Databases lists additional databases to grant privileges on
+	Databases []string `json:"databases,omitempty"`
+
+	// Engine is the database engine to manage: postgres or mysql
+	// +kubebuilder:validation:Enum=postgres;mysql
+	// +kubebuilder:default=postgres
+	Engine string `json:"engine,omitempty"`
+
+	// Host is the database server host
 	// +kubebuilder:validation:Required
 	Host string `json:"host"`
 
-	// Port is the PostgreSQL server port
-	// +kubebuilder:default=5432
+	// Port is the database server port
 	Port int32 `json:"port,omitempty"`
 
 	// AdminSecretRef references the secret containing admin credentials
@@ -31,12 +38,18 @@ type PostgresUserSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	Privileges []string `json:"privileges"`
 
+	// Roles is a list of existing database roles to grant to the user
+	Roles []string `json:"roles,omitempty"`
+
 	// SecretName is the name of the secret to create with user credentials
 	// +kubebuilder:validation:Required
 	SecretName string `json:"secretName"`
 
-	// RotatePassword triggers password rotation when changed
+	// RotatePassword triggers a password rotation when toggled
 	RotatePassword bool `json:"rotatePassword,omitempty"`
+
+	// RotationInterval enables automatic password rotation (e.g. 24h)
+	RotationInterval *metav1.Duration `json:"rotationInterval,omitempty"`
 }
 
 // PostgresUserStatus defines the observed state of PostgresUser
@@ -49,6 +62,10 @@ type PostgresUserStatus struct {
 
 	// LastPasswordRotation is when the password was last rotated
 	LastPasswordRotation *metav1.Time `json:"lastPasswordRotation,omitempty"`
+
+	// ObservedRotatePassword is the spec.rotatePassword value last reconciled,
+	// used to detect manual rotation toggles
+	ObservedRotatePassword bool `json:"observedRotatePassword,omitempty"`
 
 	// Conditions represent the latest observations
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
