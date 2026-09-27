@@ -15,12 +15,13 @@ Manage PostgreSQL database users and permissions declaratively through Kubernete
 
 Watches for `PostgresUser` custom resources and:
 
-1. Creates database users in PostgreSQL
-2. Grants specified permissions
-3. Generates and stores credentials in Secrets
-4. Handles password rotation
-5. Cleans up users when resources are deleted
-6. Reports connection status
+1. Creates database users in PostgreSQL or MySQL (`spec.engine`)
+2. Grants specified permissions across one or more databases
+3. Grants existing database roles (`spec.roles`)
+4. Generates and stores credentials in Secrets
+5. Handles manual (`spec.rotatePassword`) and scheduled (`spec.rotationInterval`) password rotation
+6. Cleans up users when resources are deleted
+7. Reports connection status
 
 ## Prerequisites
 
@@ -122,81 +123,133 @@ kubectl run -it --rm psql --image=postgres:15 --restart=Never -- \
 
 ```go
 type PostgresUserSpec struct {
-    Username       string              `json:"username"`
-    Database       string              `json:"database"`
-    Host           string              `json:"host"`
-    AdminSecretRef corev1.SecretReference `json:"adminSecretRef"`
-    Privileges     []string            `json:"privileges"`
-    SecretName     string              `json:"secretName"`
+    Username         string                 `json:"username"`
+    Database         string                 `json:"database"`
+    Databases        []string               `json:"databases,omitempty"`
+    Engine           string                 `json:"engine,omitempty"` // postgres | mysql
+    Host             string                 `json:"host"`
+    Port             int32                  `json:"port,omitempty"`
+    AdminSecretRef   corev1.SecretReference `json:"adminSecretRef"`
+    Privileges       []string               `json:"privileges"`
+    Roles            []string               `json:"roles,omitempty"`
+    SecretName       string                 `json:"secretName"`
+    RotatePassword   bool                   `json:"rotatePassword,omitempty"`
+    RotationInterval *metav1.Duration       `json:"rotationInterval,omitempty"`
 }
 
 type PostgresUserStatus struct {
-    Ready      bool               `json:"ready"`
-    Message    string             `json:"message,omitempty"`
-    Conditions []metav1.Condition `json:"conditions,omitempty"`
+    Ready                    bool               `json:"ready"`
+    Message                  string             `json:"message,omitempty"`
+    LastPasswordRotation     *metav1.Time       `json:"lastPasswordRotation,omitempty"`
+    ObservedRotatePassword   bool               `json:"observedRotatePassword,omitempty"`
+    Conditions               []metav1.Condition `json:"conditions,omitempty"`
 }
 ```
+
+### Engine Abstraction
+
+`controllers/dbengine.go` defines a `dbEngine` interface so the reconciler can
+support both PostgreSQL and MySQL:
+
+```go
+type dbEngine interface {
+    Driver() string
+    DefaultPort() int32
+    AdminDatabase() string
+    DSN(host string, port int32, user, password, database string) string
+    UserExists(ctx context.Context, db *sql.DB, username string) (bool, error)
+    CreateUserSQL(username, password string) string
+    SetPasswordSQL(username, password string) string
+    DropUserSQL(username string) string
+    DatabaseGrantSQL(database, username string) string
+    PrivilegeGrantSQL(privilege, database, username string) []string
+    RoleGrantSQL(role, username string) string
+    ValidPrivilege(privilege string) bool
+}
+```
+
+Each engine owns its DSN format, identifier quoting, and privilege allowlist —
+privileges can't be parameterized in `GRANT`, so they're validated before
+interpolation.
 
 ### Database Connection
 
 ```go
-import "github.com/lib/pq"
+func (r *PostgresUserReconciler) connect(ctx context.Context, eng dbEngine,
+    user *PostgresUser, adminUser, adminPassword, database string) (*sql.DB, error) {
 
-func (r *Reconciler) connectToDatabase(ctx context.Context, user *PostgresUser) (*sql.DB, error) {
-    // Get admin credentials
-    secret := &corev1.Secret{}
-    if err := r.Get(ctx, types.NamespacedName{
-        Name: user.Spec.AdminSecretRef.Name,
-        Namespace: user.Namespace,
-    }, secret); err != nil {
+    port := user.Spec.Port
+    if port == 0 {
+        port = eng.DefaultPort()
+    }
+
+    db, err := sql.Open(eng.Driver(), eng.DSN(user.Spec.Host, port, adminUser, adminPassword, database))
+    if err != nil {
         return nil, err
     }
-    
-    connStr := fmt.Sprintf("host=%s user=%s password=%s dbname=postgres sslmode=disable",
-        user.Spec.Host,
-        string(secret.Data["username"]),
-        string(secret.Data["password"]))
-    
-    return sql.Open("postgres", connStr)
+    if err := db.PingContext(ctx); err != nil {
+        db.Close()
+        return nil, err
+    }
+    return db, nil
 }
 ```
 
-### User Creation
+Admin credentials are read once per reconcile from `spec.adminSecretRef` and
+reused for every connection — including the per-database connections needed
+for table-level grants.
+
+### User Creation and Rotation
 
 ```go
-func (r *Reconciler) createDatabaseUser(ctx context.Context, db *sql.DB, user *PostgresUser) error {
-    password := generatePassword(32)
-    
-    // Create user
-    _, err := db.ExecContext(ctx, fmt.Sprintf(
-        "CREATE USER %s WITH PASSWORD '%s'",
-        pq.QuoteIdentifier(user.Spec.Username),
-        password))
-    if err != nil && !strings.Contains(err.Error(), "already exists") {
+// Rotate when the user is missing, the secret is gone, the manual
+// toggle changed, or the rotation interval elapsed
+rotate := !exists || !secretFound ||
+    user.Spec.RotatePassword != user.Status.ObservedRotatePassword ||
+    rotationDue(user)
+
+if rotate {
+    password = generatePassword(32)
+
+    stmt := eng.CreateUserSQL(user.Spec.Username, password)
+    if exists {
+        stmt = eng.SetPasswordSQL(user.Spec.Username, password)
+    }
+    if _, err := db.ExecContext(ctx, stmt); err != nil {
         return err
     }
-    
-    // Grant privileges
-    for _, priv := range user.Spec.Privileges {
-        _, err := db.ExecContext(ctx, fmt.Sprintf(
-            "GRANT %s ON ALL TABLES IN SCHEMA public TO %s",
-            priv, pq.QuoteIdentifier(user.Spec.Username)))
-        if err != nil {
-            return err
-        }
-    }
-    
-    // Store credentials in Secret
-    return r.createOrUpdateSecret(ctx, user, password)
+
+    now := metav1.Now()
+    user.Status.LastPasswordRotation = &now
 }
 ```
 
-## Exercises
+`status.observedRotatePassword` is only persisted after the new credentials
+Secret is written, so a failed reconcile retries the rotation instead of
+desyncing the Secret from the database.
 
-1. Add Role Support - Support PostgreSQL roles
-2. Implement Password Rotation - Automatic credential rotation
-3. Support Multiple Databases - Manage users across databases
-4. Add MySQL Support - Extend to support MySQL
+With `spec.rotationInterval` set, the reconciler returns
+`ctrl.Result{RequeueAfter: nextRotationIn(user)}` so rotation happens on
+schedule without an external cron.
+
+## Implemented Extensions
+
+1. **Role support** — `spec.roles` grants existing database roles to the user
+   (`GRANT role TO user` / MySQL 8 `GRANT 'role'@'%' TO 'user'@'%'`).
+2. **Automatic password rotation** — `spec.rotationInterval` schedules
+   rotation via `RequeueAfter`; toggling `spec.rotatePassword` still triggers
+   a manual rotation exactly once.
+3. **Multiple databases** — `spec.databases` grants the same privileges on
+   additional databases alongside `spec.database`.
+4. **MySQL support** — `spec.engine: mysql` uses the `go-sql-driver/mysql`
+   driver and MySQL account/grant syntax (`'user'@'%'`, `GRANT ... ON db.*`).
+
+## Further Exercises
+
+1. Use TLS connections (`sslmode` / `tls=` DSN options) instead of `disable`
+2. Revoke privileges removed from `spec.privileges` (diff-based reconciliation)
+3. Pool admin connections per host instead of opening per reconcile
+4. Emit Kubernetes Events on rotation and grant failures
 
 ## Next Steps
 
