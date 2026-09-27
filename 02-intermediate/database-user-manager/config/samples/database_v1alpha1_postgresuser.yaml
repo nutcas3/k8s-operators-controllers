@@ -6,6 +6,9 @@ metadata:
 spec:
   username: myapp
   database: myapp_db
+  databases:
+    - myapp_analytics
+  engine: postgres
   host: postgres.default.svc.cluster.local
   port: 5432
   adminSecretRef:
@@ -15,5 +18,8 @@ spec:
     - INSERT
     - UPDATE
     - DELETE
+  roles:
+    - pg_read_all_settings
   secretName: myapp-db-credentials
   rotatePassword: false
+  rotationInterval: 720h
