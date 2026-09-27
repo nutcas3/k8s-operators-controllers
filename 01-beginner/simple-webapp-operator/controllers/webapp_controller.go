@@ -90,11 +90,11 @@ func (r *WebAppReconciler) reconcileDeployment(ctx context.Context, webapp *apps
 	if !reflect.DeepEqual(deployment.Spec.Replicas, desiredDeployment.Spec.Replicas) ||
 		!reflect.DeepEqual(deployment.Spec.Template.Spec.Containers[0].Image, desiredDeployment.Spec.Template.Spec.Containers[0].Image) ||
 		!reflect.DeepEqual(deployment.Spec.Template.Spec.Containers[0].Ports, desiredDeployment.Spec.Template.Spec.Containers[0].Ports) {
-		
+
 		deployment.Spec.Replicas = desiredDeployment.Spec.Replicas
 		deployment.Spec.Template.Spec.Containers[0].Image = desiredDeployment.Spec.Template.Spec.Containers[0].Image
 		deployment.Spec.Template.Spec.Containers[0].Ports = desiredDeployment.Spec.Template.Spec.Containers[0].Ports
-		
+
 		return r.Update(ctx, deployment)
 	}
 
