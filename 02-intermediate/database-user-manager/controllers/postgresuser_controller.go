@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,7 +18,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	_ "github.com/lib/pq"
 	databasev1alpha1 "github.com/nutcas3/database-user-manager/api/v1alpha1"
 )
 
@@ -37,7 +37,7 @@ type PostgresUserReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
 func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// Fetch the PostgresUser
 	user := &databasev1alpha1.PostgresUser{}
@@ -45,9 +45,16 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	eng, err := engineFor(user.Spec.Engine)
+	if err != nil {
+		r.updateStatus(ctx, user, false, err.Error())
+		// Invalid spec: no point retrying until the resource changes
+		return ctrl.Result{}, nil
+	}
+
 	// Handle deletion
 	if !user.DeletionTimestamp.IsZero() {
-		return r.handleDeletion(ctx, user)
+		return r.handleDeletion(ctx, user, eng)
 	}
 
 	// Add finalizer if not present
@@ -58,83 +65,107 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	// Connect to database
-	db, err := r.connectToDatabase(ctx, user)
+	// Resolve admin credentials
+	adminUser, adminPassword, err := r.adminCredentials(ctx, user)
 	if err != nil {
-		log.Error(err, "Failed to connect to database")
+		logger.Error(err, "Failed to get admin credentials")
+		r.updateStatus(ctx, user, false, fmt.Sprintf("Admin credentials unavailable: %v", err))
+		return ctrl.Result{}, err
+	}
+
+	// Connect to the admin database
+	db, err := r.connect(ctx, eng, user, adminUser, adminPassword, eng.AdminDatabase())
+	if err != nil {
+		logger.Error(err, "Failed to connect to database")
 		r.updateStatus(ctx, user, false, fmt.Sprintf("Connection failed: %v", err))
 		return ctrl.Result{}, err
 	}
 	defer db.Close()
 
 	// Check if user exists
-	exists, err := r.userExists(ctx, db, user)
+	exists, err := eng.UserExists(ctx, db, user.Spec.Username)
 	if err != nil {
-		log.Error(err, "Failed to check if user exists")
+		logger.Error(err, "Failed to check if user exists")
 		return ctrl.Result{}, err
 	}
 
+	// The stored password, if the credentials secret is still around
+	storedPassword, secretFound := r.storedPassword(ctx, user)
+
+	// Rotate when the user is missing, the secret is gone, the manual
+	// toggle changed, or the rotation interval elapsed
+	rotate := !exists || !secretFound ||
+		user.Spec.RotatePassword != user.Status.ObservedRotatePassword ||
+		rotationDue(user)
+
 	var password string
-	if !exists || user.Spec.RotatePassword {
-		// Create or update user
-		password, err = r.createOrUpdateUser(ctx, db, user)
-		if err != nil {
-			log.Error(err, "Failed to create/update user")
+	if rotate {
+		password = generatePassword(32)
+
+		stmt := eng.CreateUserSQL(user.Spec.Username, password)
+		if exists {
+			stmt = eng.SetPasswordSQL(user.Spec.Username, password)
+		}
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			logger.Error(err, "Failed to create/update user")
 			r.updateStatus(ctx, user, false, fmt.Sprintf("User creation failed: %v", err))
 			return ctrl.Result{}, err
 		}
 
-		// Update password rotation timestamp
 		now := metav1.Now()
 		user.Status.LastPasswordRotation = &now
 	} else {
-		// Get existing password from secret
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      user.Spec.SecretName,
-			Namespace: user.Namespace,
-		}, secret); err == nil {
-			password = string(secret.Data["password"])
-		}
+		password = storedPassword
 	}
 
-	// Grant privileges
-	if err := r.grantPrivileges(ctx, db, user); err != nil {
-		log.Error(err, "Failed to grant privileges")
+	// Grant privileges on all requested databases
+	if err := r.grantPrivileges(ctx, eng, user, adminUser, adminPassword, db); err != nil {
+		logger.Error(err, "Failed to grant privileges")
 		r.updateStatus(ctx, user, false, fmt.Sprintf("Privilege grant failed: %v", err))
 		return ctrl.Result{}, err
 	}
 
+	// Grant role memberships
+	if err := r.grantRoles(ctx, eng, db, user); err != nil {
+		logger.Error(err, "Failed to grant roles")
+		r.updateStatus(ctx, user, false, fmt.Sprintf("Role grant failed: %v", err))
+		return ctrl.Result{}, err
+	}
+
 	// Create or update secret with credentials
-	if password != "" {
-		if err := r.createOrUpdateSecret(ctx, user, password); err != nil {
-			log.Error(err, "Failed to create/update secret")
-			return ctrl.Result{}, err
-		}
+	if err := r.createOrUpdateSecret(ctx, eng, user, password); err != nil {
+		logger.Error(err, "Failed to create/update secret")
+		return ctrl.Result{}, err
+	}
+
+	// Only mark the toggle as observed once the new password is safely
+	// stored, so a failed retry rotates again rather than desyncing
+	if rotate {
+		user.Status.ObservedRotatePassword = user.Spec.RotatePassword
 	}
 
 	// Update status
 	r.updateStatus(ctx, user, true, "User ready")
 
-	log.Info("Successfully reconciled PostgresUser")
-	return ctrl.Result{}, nil
+	logger.Info("Successfully reconciled PostgresUser")
+	return ctrl.Result{RequeueAfter: nextRotationIn(user)}, nil
 }
 
-func (r *PostgresUserReconciler) handleDeletion(ctx context.Context, user *databasev1alpha1.PostgresUser) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+func (r *PostgresUserReconciler) handleDeletion(ctx context.Context, user *databasev1alpha1.PostgresUser, eng dbEngine) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(user, finalizerName) {
-		// Connect to database
-		db, err := r.connectToDatabase(ctx, user)
+		adminUser, adminPassword, err := r.adminCredentials(ctx, user)
 		if err != nil {
-			log.Error(err, "Failed to connect to database for cleanup")
-			// Continue with finalizer removal even if connection fails
+			logger.Error(err, "Failed to get admin credentials for cleanup")
+		} else if db, err := r.connect(ctx, eng, user, adminUser, adminPassword, eng.AdminDatabase()); err != nil {
+			logger.Error(err, "Failed to connect to database for cleanup")
 		} else {
 			defer db.Close()
 
 			// Drop user
-			if err := r.dropUser(ctx, db, user); err != nil {
-				log.Error(err, "Failed to drop user")
+			if _, err := db.ExecContext(ctx, eng.DropUserSQL(user.Spec.Username)); err != nil {
+				logger.Error(err, "Failed to drop user")
 				// Continue with finalizer removal
 			}
 		}
@@ -149,28 +180,30 @@ func (r *PostgresUserReconciler) handleDeletion(ctx context.Context, user *datab
 	return ctrl.Result{}, nil
 }
 
-func (r *PostgresUserReconciler) connectToDatabase(ctx context.Context, user *databasev1alpha1.PostgresUser) (*sql.DB, error) {
-	// Get admin credentials
+func (r *PostgresUserReconciler) adminCredentials(ctx context.Context, user *databasev1alpha1.PostgresUser) (string, string, error) {
+	namespace := user.Spec.AdminSecretRef.Namespace
+	if namespace == "" {
+		namespace = user.Namespace
+	}
+
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      user.Spec.AdminSecretRef.Name,
-		Namespace: user.Namespace,
+		Namespace: namespace,
 	}, secret); err != nil {
-		return nil, fmt.Errorf("failed to get admin secret: %w", err)
+		return "", "", fmt.Errorf("failed to get admin secret: %w", err)
 	}
 
+	return string(secret.Data["username"]), string(secret.Data["password"]), nil
+}
+
+func (r *PostgresUserReconciler) connect(ctx context.Context, eng dbEngine, user *databasev1alpha1.PostgresUser, adminUser, adminPassword, database string) (*sql.DB, error) {
 	port := user.Spec.Port
 	if port == 0 {
-		port = 5432
+		port = eng.DefaultPort()
 	}
 
-	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=disable",
-		user.Spec.Host,
-		port,
-		string(secret.Data["username"]),
-		string(secret.Data["password"]))
-
-	db, err := sql.Open("postgres", connStr)
+	db, err := sql.Open(eng.Driver(), eng.DSN(user.Spec.Host, port, adminUser, adminPassword, database))
 	if err != nil {
 		return nil, err
 	}
@@ -183,77 +216,50 @@ func (r *PostgresUserReconciler) connectToDatabase(ctx context.Context, user *da
 	return db, nil
 }
 
-func (r *PostgresUserReconciler) userExists(ctx context.Context, db *sql.DB, user *databasev1alpha1.PostgresUser) (bool, error) {
-	var exists bool
-	query := "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)"
-	err := db.QueryRowContext(ctx, query, user.Spec.Username).Scan(&exists)
-	return exists, err
+// storedPassword returns the password from the credentials secret and whether
+// it was found, so a missing secret triggers password regeneration.
+func (r *PostgresUserReconciler) storedPassword(ctx context.Context, user *databasev1alpha1.PostgresUser) (string, bool) {
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      user.Spec.SecretName,
+		Namespace: user.Namespace,
+	}, secret); err != nil {
+		return "", false
+	}
+	password := string(secret.Data["password"])
+	return password, password != ""
 }
 
-func (r *PostgresUserReconciler) createOrUpdateUser(ctx context.Context, db *sql.DB, user *databasev1alpha1.PostgresUser) (string, error) {
-	password := generatePassword(32)
-
-	exists, err := r.userExists(ctx, db, user)
-	if err != nil {
-		return "", err
-	}
-
-	if exists {
-		// Update password
-		query := fmt.Sprintf("ALTER USER %s WITH PASSWORD '%s'",
-			quoteIdentifier(user.Spec.Username),
-			password)
-		if _, err := db.ExecContext(ctx, query); err != nil {
-			return "", err
-		}
-	} else {
-		// Create user
-		query := fmt.Sprintf("CREATE USER %s WITH PASSWORD '%s'",
-			quoteIdentifier(user.Spec.Username),
-			password)
-		if _, err := db.ExecContext(ctx, query); err != nil {
-			return "", err
-		}
-	}
-
-	return password, nil
-}
-
-func (r *PostgresUserReconciler) grantPrivileges(ctx context.Context, db *sql.DB, user *databasev1alpha1.PostgresUser) error {
-	// Grant database access
-	query := fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s",
-		quoteIdentifier(user.Spec.Database),
-		quoteIdentifier(user.Spec.Username))
-	if _, err := db.ExecContext(ctx, query); err != nil {
-		return err
-	}
-
-	// Connect to target database
-	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		user.Spec.Host,
-		user.Spec.Port,
-		"postgres", // Use admin user
-		"",         // Would need admin password
-		user.Spec.Database)
-
-	targetDB, err := sql.Open("postgres", connStr)
-	if err != nil {
-		return err
-	}
-	defer targetDB.Close()
-
-	// Grant privileges on all tables
+func (r *PostgresUserReconciler) grantPrivileges(ctx context.Context, eng dbEngine, user *databasev1alpha1.PostgresUser, adminUser, adminPassword string, adminDB *sql.DB) error {
+	// Privileges are interpolated into GRANT statements, so validate them first
 	for _, priv := range user.Spec.Privileges {
-		query := fmt.Sprintf("GRANT %s ON ALL TABLES IN SCHEMA public TO %s",
-			priv, quoteIdentifier(user.Spec.Username))
-		if _, err := targetDB.ExecContext(ctx, query); err != nil {
+		if !eng.ValidPrivilege(priv) {
+			return fmt.Errorf("invalid privilege %q for engine %s", priv, eng.Driver())
+		}
+	}
+
+	for _, database := range allDatabases(user) {
+		// Database-level grant on the admin connection (postgres only)
+		if stmt := eng.DatabaseGrantSQL(database, user.Spec.Username); stmt != "" {
+			if _, err := adminDB.ExecContext(ctx, stmt); err != nil {
+				return err
+			}
+		}
+
+		// Table-level grants must run while connected to the target database
+		targetDB, err := r.connect(ctx, eng, user, adminUser, adminPassword, database)
+		if err != nil {
 			return err
 		}
-
-		// Grant on future tables
-		query = fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT %s ON TABLES TO %s",
-			priv, quoteIdentifier(user.Spec.Username))
-		if _, err := targetDB.ExecContext(ctx, query); err != nil {
+		for _, priv := range user.Spec.Privileges {
+			for _, stmt := range eng.PrivilegeGrantSQL(priv, database, user.Spec.Username) {
+				if _, err := targetDB.ExecContext(ctx, stmt); err != nil {
+					targetDB.Close()
+					return err
+				}
+			}
+		}
+		if err := targetDB.Close(); err != nil {
 			return err
 		}
 	}
@@ -261,13 +267,21 @@ func (r *PostgresUserReconciler) grantPrivileges(ctx context.Context, db *sql.DB
 	return nil
 }
 
-func (r *PostgresUserReconciler) dropUser(ctx context.Context, db *sql.DB, user *databasev1alpha1.PostgresUser) error {
-	query := fmt.Sprintf("DROP USER IF EXISTS %s", quoteIdentifier(user.Spec.Username))
-	_, err := db.ExecContext(ctx, query)
-	return err
+func (r *PostgresUserReconciler) grantRoles(ctx context.Context, eng dbEngine, db *sql.DB, user *databasev1alpha1.PostgresUser) error {
+	for _, role := range user.Spec.Roles {
+		if _, err := db.ExecContext(ctx, eng.RoleGrantSQL(role, user.Spec.Username)); err != nil {
+			return fmt.Errorf("granting role %q: %w", role, err)
+		}
+	}
+	return nil
 }
 
-func (r *PostgresUserReconciler) createOrUpdateSecret(ctx context.Context, user *databasev1alpha1.PostgresUser, password string) error {
+func (r *PostgresUserReconciler) createOrUpdateSecret(ctx context.Context, eng dbEngine, user *databasev1alpha1.PostgresUser, password string) error {
+	port := user.Spec.Port
+	if port == 0 {
+		port = eng.DefaultPort()
+	}
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      user.Spec.SecretName,
@@ -282,8 +296,10 @@ func (r *PostgresUserReconciler) createOrUpdateSecret(ctx context.Context, user 
 		secret.Data["username"] = []byte(user.Spec.Username)
 		secret.Data["password"] = []byte(password)
 		secret.Data["host"] = []byte(user.Spec.Host)
-		secret.Data["port"] = []byte(fmt.Sprintf("%d", user.Spec.Port))
+		secret.Data["port"] = fmt.Appendf(nil, "%d", port)
 		secret.Data["database"] = []byte(user.Spec.Database)
+		secret.Data["databases"] = []byte(strings.Join(allDatabases(user), ","))
+		secret.Data["engine"] = []byte(eng.Driver())
 
 		// Set owner reference
 		return controllerutil.SetControllerReference(user, secret, r.Scheme)
@@ -302,6 +318,7 @@ func (r *PostgresUserReconciler) updateStatus(ctx context.Context, user *databas
 		Status:             metav1.ConditionFalse,
 		Reason:             "ReconciliationFailed",
 		Message:            message,
+		ObservedGeneration: user.Generation,
 		LastTransitionTime: metav1.Now(),
 	}
 
@@ -322,14 +339,41 @@ func (r *PostgresUserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// allDatabases returns the primary database plus any additional databases.
+func allDatabases(user *databasev1alpha1.PostgresUser) []string {
+	return append([]string{user.Spec.Database}, user.Spec.Databases...)
+}
+
+// rotationDue reports whether the automatic rotation interval has elapsed.
+func rotationDue(user *databasev1alpha1.PostgresUser) bool {
+	if user.Spec.RotationInterval == nil {
+		return false
+	}
+	if user.Status.LastPasswordRotation == nil {
+		return true
+	}
+	return time.Since(user.Status.LastPasswordRotation.Time) >= user.Spec.RotationInterval.Duration
+}
+
+// nextRotationIn returns how long until the next automatic rotation is due.
+func nextRotationIn(user *databasev1alpha1.PostgresUser) time.Duration {
+	if user.Spec.RotationInterval == nil {
+		return 0
+	}
+	if user.Status.LastPasswordRotation == nil {
+		return user.Spec.RotationInterval.Duration
+	}
+	next := user.Status.LastPasswordRotation.Add(user.Spec.RotationInterval.Duration)
+	if d := time.Until(next); d > 0 {
+		return d
+	}
+	return time.Minute
+}
+
 func generatePassword(length int) string {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
 		panic(err)
 	}
 	return base64.URLEncoding.EncodeToString(bytes)[:length]
-}
-
-func quoteIdentifier(name string) string {
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
