@@ -1,0 +1,13 @@
+apiVersion: infrastructure.example.com/v1alpha1
+kind: DevCluster
+metadata:
+  name: my-dev-cluster
+  namespace: default
+spec:
+  version: v1.28.0
+  nodes: 3
+  provider: kind
+  config:
+    networking:
+      podSubnet: "10.244.0.0/16"
+      serviceSubnet: "10.96.0.0/12"
