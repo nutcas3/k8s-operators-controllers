@@ -15,8 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/robfig/cron/v3"
 	backupv1alpha1 "github.com/nutcas3/statefulset-backup-operator/api/v1alpha1"
+	"github.com/robfig/cron/v3"
 )
 
 const (

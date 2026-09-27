@@ -1,0 +1,15 @@
+apiVersion: autoscaling.example.com/v1alpha1
+kind: ExternalScaler
+metadata:
+  name: worker-scaler
+  namespace: default
+spec:
+  targetDeployment: worker
+  metricSource: rabbitmq
+  queueName: tasks
+  targetQueueDepth: 50
+  minReplicas: 1
+  maxReplicas: 10
+  rabbitmqURL: http://rabbitmq:15672
+  rabbitmqVhost: /
+  pollInterval: 30s
