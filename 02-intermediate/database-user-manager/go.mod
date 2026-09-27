@@ -3,6 +3,7 @@ module github.com/nutcas3/database-user-manager
 go 1.26
 
 require (
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/lib/pq v1.10.9
 	k8s.io/api v0.35.1
 	k8s.io/apimachinery v0.35.1
@@ -11,6 +12,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
