@@ -5,7 +5,7 @@ A collection of hands-on Kubernetes operator and controller projects organized b
 ## Repository Structure
 
 ```
-k8s-operators-controllers/
+k8s-controllers&operators/
 ├── README.md
 ├── docs/
 │   ├── getting-started.md
@@ -13,70 +13,33 @@ k8s-operators-controllers/
 │   └── best-practices.md
 ├── 01-beginner/
 │   ├── simple-webapp-operator/
-│   │   ├── README.md
-│   │   ├── Makefile
-│   │   ├── PROJECT
-│   │   ├── go.mod
-│   │   ├── api/v1alpha1/
-│   │   ├── controllers/
-│   │   ├── config/
-│   │   └── examples/
-│   └── configmap-syncer/
-│       ├── README.md
-│       ├── Makefile
-│       ├── PROJECT
-│       ├── go.mod
-│       ├── api/v1alpha1/
-│       ├── controllers/
-│       ├── config/
-│       └── examples/
+│   ├── configmap-syncer/
 ├── 02-intermediate/
 │   ├── statefulset-backup-operator/
-│   │   ├── README.md
-│   │   ├── Makefile
-│   │   ├── PROJECT
-│   │   ├── go.mod
-│   │   ├── api/v1alpha1/
-│   │   ├── controllers/
-│   │   ├── config/
-│   │   └── examples/
 │   ├── database-user-manager/
-│   │   ├── README.md
-│   │   ├── Makefile
-│   │   ├── PROJECT
-│   │   ├── go.mod
-│   │   ├── api/v1alpha1/
-│   │   ├── controllers/
-│   │   ├── config/
-│   │   └── examples/
-│   └── hpa-custom-metric-operator/
-│       ├── README.md
-│       ├── Makefile
-│       ├── PROJECT
-│       ├── go.mod
-│       ├── api/v1alpha1/
-│       ├── controllers/
-│       ├── config/
-│       └── examples/
+│   ├── hpa-custom-metric-operator/
 └── 03-advanced/
     ├── cluster-provisioner-operator/
-    │   ├── README.md
-    │   ├── Makefile
-    │   ├── PROJECT
-    │   ├── go.mod
-    │   ├── api/v1alpha1/
-    │   ├── controllers/
-    │   ├── config/
-    │   └── examples/
     └── rolling-upgrade-operator/
-        ├── README.md
-        ├── Makefile
-        ├── PROJECT
-        ├── go.mod
-        ├── api/v1alpha1/
-        ├── controllers/
-        ├── config/
-        └── examples/
+```
+
+Each project is a self-contained Go module with the same layout:
+
+```
+<project>/
+├── README.md              # Tutorial: concepts, quickstart, exercises
+├── Makefile               # manifests / generate / build / run / deploy
+├── Dockerfile             # distroless manager image
+├── go.mod / go.sum        # own module: github.com/nutcas3/<project>
+├── main.go                # manager entrypoint (simple-webapp uses cmd/)
+├── api/v1alpha1/          # CRD types + generated deepcopy
+├── controllers/           # reconciler(s)
+├── config/
+│   ├── crd/bases/         # generated CRDs (gitignored — `make manifests`)
+│   ├── rbac/              # role + binding
+│   ├── manager/           # controller Deployment
+│   └── samples/           # example CRs
+└── hack/boilerplate.go.txt
 ```
 
 ## Beginner Projects
@@ -157,7 +120,9 @@ spec:
   pvcSelector:
     matchLabels:
       app: postgresql
-  backupStrategy: snapshot
+  backupStoragePVC: backup-storage
+  backupStrategy: tar
+  retentionCount: 7
 ```
 
 [Full Documentation](02-intermediate/statefulset-backup-operator/README.md)
@@ -165,13 +130,15 @@ spec:
 ### 4. Database User Manager Operator
 **Focus:** External system integration, secret management
 
-Manage PostgreSQL database users and permissions declaratively.
+Manage PostgreSQL or MySQL database users and permissions declaratively.
 
 **Key Concepts:**
 - External API/database integration
 - Secret generation and management
 - Application-level reconciliation
 - Error handling and retries
+- Credential rotation (manual toggle or `rotationInterval`)
+- Engine abstraction (`spec.engine: postgres | mysql`)
 
 **CRD Example:**
 ```yaml
@@ -181,11 +148,17 @@ metadata:
   name: app-user
 spec:
   username: myapp
+  engine: postgres
   database: myapp_db
+  host: postgres.default.svc.cluster.local
+  adminSecretRef:
+    name: postgres-admin
   privileges:
     - SELECT
     - INSERT
     - UPDATE
+  secretName: myapp-db-credentials
+  rotationInterval: 720h
 ```
 
 [Full Documentation](02-intermediate/database-user-manager/README.md)
@@ -209,9 +182,13 @@ metadata:
   name: queue-scaler
 spec:
   targetDeployment: worker
-  metricSource: rabbitmq
+  metricSource: rabbitmq        # rabbitmq | redis | http
   queueName: tasks
   targetQueueDepth: 50
+  minReplicas: 1
+  maxReplicas: 10
+  rabbitmqURL: http://rabbitmq:15672
+  pollInterval: 30s
 ```
 
 [Full Documentation](02-intermediate/hpa-custom-metric-operator/README.md)
@@ -262,22 +239,26 @@ kind: ManagedApplication
 metadata:
   name: my-app
 spec:
-  version: v2.0.0
+  deploymentName: my-app
+  image: my-app
+  version: "v2.0.0"
   paused: false
   upgradeStrategy:
-    type: RollingWithMigration
-    migrationScript: /scripts/migrate.sh
+    type: RollingWithMigration   # Rolling | RollingWithMigration | Canary
+    migrationJob:
+      image: my-app-migrations:v2.0.0
+      command: ["/bin/migrate", "up"]
 ```
 
 [Full Documentation](03-advanced/rolling-upgrade-operator/README.md)
 
 ## Prerequisites
 
-- Go 1.21 or later
+- Go 1.27 (statefulset-backup-operator still builds on 1.26)
 - Docker or Podman
 - kubectl
 - Access to a Kubernetes cluster (local: kind, minikube, k3d)
-- Kubebuilder v3.x or Operator SDK v1.x
+- Kubebuilder v3.x or Operator SDK v1.x (only needed if you re-scaffold; `make` targets download `controller-gen` locally)
 
 ## Getting Started
 
@@ -298,6 +279,14 @@ spec:
    - Building and running the operator
    - Testing with example CRs
    - Deploying to a cluster
+
+   Common workflow inside any project directory:
+   ```bash
+   make manifests   # generate CRDs + RBAC into config/
+   make run         # run the controller against your kubeconfig
+   make install     # kubectl apply the CRDs
+   kubectl apply -f config/samples/   # create an example CR
+   ```
 
 4. **Read the documentation:**
    Check out `docs/getting-started.md` for a comprehensive guide.
